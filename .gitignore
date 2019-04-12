@@ -1,0 +1,10 @@
+/__pycache__/
+*.pyc
+*.pyo
+*.vcf
+*.vcf.gz
+*.vcf.gz.tbi
+/*.rp
+/*.rpdb
+/.*/
+/*.sh

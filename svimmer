@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+from __future__ import print_function
+
+import argparse
+import itertools
+import gzip
+import logging
+import operator
+import sys
+from pysam import TabixFile
+from multiprocessing import Pool
+
+from sv import SV
+
+
+def open_vcf_file(filename):
+    _vcf_f = None
+
+    if filename.endswith(".gz"):
+        _vcf_f = gzip.open(filename, "r")
+    else:
+        _vcf_f = open(filename, "r")
+
+    return _vcf_f
+
+
+def read_header(vcf_f):
+    header = ""
+
+    while True:
+        line = vcf_f.readline().decode("utf-8")
+
+        if line.startswith("##"):
+            header += line
+            continue
+
+        break
+
+    return header
+
+
+def add_sv_to_store(ref_stored_svs, new_sv):
+    assert isinstance(ref_stored_svs, list)
+    assert isinstance(new_sv, SV)
+
+    for stored_sv_reverse in reversed(ref_stored_svs):
+        if stored_sv_reverse.max_begin + args.max_distance + 1000 < new_sv.begin:
+            break
+        elif stored_sv_reverse.should_merge(new_sv, args.max_distance, args.max_size_difference):
+            stored_sv_reverse.merge(new_sv)
+            return
+
+    # We could not find any SV in the stored SV list that can be merged with this one,
+    # so let's add it
+    ref_stored_svs.append(new_sv)
+
+
+def add_sv_to_many_in_store(ref_stored_svs, new_sv):
+    assert isinstance(ref_stored_svs, list)
+    assert isinstance(new_sv, SV)
+
+    for stored_sv_reverse in reversed(ref_stored_svs):
+        #if stored_sv_reverse.max_begin + args.max_distance + 1000 < new_sv.begin:
+        #    break
+        if stored_sv_reverse.should_merge(new_sv, args.max_distance, args.max_size_difference):
+            stored_sv_reverse.merge(new_sv)
+
+
+def append_svs_from_vcf(vcf_filename, chrom):
+    svs = []
+
+    try:
+        with TabixFile(vcf_filename.rstrip("\n")) as new_vcf_f:
+            for record in new_vcf_f.fetch(chrom):
+                svs.append(SV(record, check_type=not args.ignore_types, join_mode=args.join_mode, output_ids=args.ids))
+    except ValueError:
+        print("Warning: Contig '%s' was not found in file %s!" % (chrom, vcf_filename.rstrip("\n")))
+        pass  # If contig does not exists
+
+    return svs
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input", help="File containing all input VCF files.")
+    parser.add_argument("chromosomes", nargs="+", help="Which chromosome(s) to merge")
+    parser.add_argument("--output", default="-", help="Output VCF file.")
+    parser.add_argument("--loglevel", default="WARNING", help="Which log level to use, should be INFO, WARNING or ERROR.")
+    parser.add_argument("--threads", default=1, type=int, help="Number of threads to use.")
+    parser.add_argument("--max_distance",
+                        default=200,
+                        type=int,
+                        help="Maximum distance between breakpoint ends to allow merging (default 200).")
+    parser.add_argument("--max_size_difference",
+                        default=100,
+                        type=int,
+                        help="""Maximum size difference of SVs that can be merged (default 100).\
+                         -1 means no limit."""
+                        )
+    parser.add_argument("--ignore-types",
+                        dest="ignore_types",
+                        action="store_true",
+                        help="Set if the merging should ignore the SV type."
+                        )
+    parser.add_argument("--join-mode",
+                        dest="join_mode",
+                        action="store_true",
+                        help="""Set if the merging should join VCFs from the first file to the other\
+                        files."""
+                        )
+    parser.add_argument("--ids", action="store_true", help="""Print variant IDs in INFO field of merged SVs.""")
+    args = parser.parse_args()
+
+    if args.max_size_difference < 0:
+        args.max_size_difference = 400000000
+
+    header = ""
+    all_svs = []  # List with all processed SVs
+
+    lines = []
+    pool = Pool(args.threads)
+
+    logger = logging.getLogger(__name__)
+    FORMAT = '%(asctime)-15s: %(message)s'
+    logging.basicConfig(format=FORMAT)
+    logger.setLevel(logging.getLevelName(args.loglevel))
+    logger.info("Starting to merge")
+
+
+    with open(args.input, "r") as f_in:
+        lines = f_in.read().rstrip("\n").split("\n")
+        vcf_f = open_vcf_file(filename=lines[0].rstrip("\n"))  # Open the first VCF
+        header = read_header(vcf_f)  # Read the header of the first VCF file
+        vcf_f.close()  # Close the VCF file
+
+        with sys.stdout if args.output == "-" else open(args.output, "w") as f_out:
+            ## Write header
+            f_out.write(header)  # Print header of first VCF file
+
+            # Add some lines to the output VCF header
+            if args.ids:
+                f_out.write("""##INFO=<ID=MERGED_IDS,Number=.,Type=String,Description="List of merged or joined variant IDs.">\n""")
+
+            if args.join_mode:
+                f_out.write("""##INFO=<ID=NUM_JOINED_SVS,Number=1,Type=Integer,Description="Number of joined SVs.">\n""")
+            else:
+                f_out.write("""##INFO=<ID=NUM_MERGED_SVS,Number=1,Type=Integer,Description="Number of merged SVs.">\n""")
+
+            f_out.write("""##INFO=<ID=STDDEV_POS,Number=2,Type=Integer,Description="Std. dev of begin and end positions.">\n""")
+            f_out.write("""#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n""")
+
+            for chrom in args.chromosomes:
+                if args.join_mode:
+                    all_svs = append_svs_from_vcf(lines[0], chrom)
+                else:
+                    results = pool.starmap(append_svs_from_vcf, zip(lines, itertools.repeat(chrom)), chunksize=1)
+                    all_svs = [item for sublist in results for item in sublist]
+                    all_svs.sort(key = operator.attrgetter('begin', 'end')) # Sort all SVs
+
+                logger.info("Finished reading all VCFs for chrom: %s" % chrom)
+                stored_svs = []
+
+                if args.join_mode:
+                    # Join mode
+                    while len(all_svs) > 0:
+                        stored_svs.append(all_svs.pop(0))
+
+                    for line_in in lines[1:]:
+                        all_svs = append_svs_from_vcf(line_in, chrom)
+                        all_svs.sort(key = operator.attrgetter('begin', 'end'))  # Sort all SVs
+
+                        while len(all_svs) > 0:
+                            add_sv_to_many_in_store(stored_svs, all_svs.pop(0))
+                elif len(all_svs) > 0:
+                    # Merge mode
+                    stored_svs.append(all_svs.pop(0))  # Start merging SVs
+
+                    while len(all_svs) > 0:
+                        add_sv_to_store(stored_svs, all_svs.pop(0))
+
+                    logger.info("Finished merging the SV sites")
+
+                    for stored_sv in stored_svs:
+                        stored_sv.finalize()
+
+                    logger.info("Finished finalizing")
+                    stored_svs.sort(key = operator.attrgetter('begin', 'end'))  # Sort all before outputting
+                    logger.info("Finished sorting")
+
+                for stored_sv in stored_svs:
+                    f_out.write(str(stored_sv))
+
+            logger.info("Everything is completed")
