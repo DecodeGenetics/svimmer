@@ -74,7 +74,7 @@ def append_svs_from_vcf(vcf_filename, chrom):
             for record in new_vcf_f.fetch(chrom):
                 svs.append(SV(record, check_type=not args.ignore_types, join_mode=args.join_mode, output_ids=args.ids))
     except ValueError:
-        print("Warning: Contig '%s' was not found in file %s!" % (chrom, vcf_filename.rstrip("\n")))
+        print("Warning: Contig '%s' was not found in file %s!" % (chrom, vcf_filename.rstrip("\n")), file=sys.stderr)
         pass  # If contig does not exists
 
     return svs
