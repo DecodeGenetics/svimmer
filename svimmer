@@ -6,6 +6,7 @@ import itertools
 import gzip
 import logging
 import operator
+import os
 import sys
 from pysam import TabixFile
 from multiprocessing import Pool
@@ -68,13 +69,19 @@ def add_sv_to_many_in_store(ref_stored_svs, new_sv):
 
 def append_svs_from_vcf(vcf_filename, chrom):
     svs = []
+    vcf_filename = vcf_filename.rstrip("\n")
+    vcf_index = vcf_filename + ".csi"
+    
+    # Use .tbi index if it exists, otherwise try opening .csi
+    if os.path.exists(vcf_filename + ".tbi"):
+        vcf_index = vcf_filename + ".tbi"
 
     try:
-        with TabixFile(vcf_filename.rstrip("\n")) as new_vcf_f:
+        with TabixFile(vcf_filename, "r", None, vcf_index) as new_vcf_f:
             for record in new_vcf_f.fetch(chrom):
                 svs.append(SV(record, check_type=not args.ignore_types, join_mode=args.join_mode, output_ids=args.ids))
     except ValueError:
-        print("Warning: Contig '%s' was not found in file %s!" % (chrom, vcf_filename.rstrip("\n")), file=sys.stderr)
+        print("Warning: Contig '%s' was not found in file %s!" % (chrom, vcf_filename), file=sys.stderr)
         pass  # If contig does not exists
 
     return svs
