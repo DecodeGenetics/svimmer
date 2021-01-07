@@ -3,7 +3,7 @@
 import sys
 from utilities import calculate_overlap, calculate_stddev, get_most_common_item
 
-SV_TYPES = ['UNK', 'BND', 'DEL', 'INS', 'INV']
+SV_TYPES = ['UNK', 'BND', 'DEL', 'INS', 'INV', 'NOT_SV']
 
 def make_info_dictionary(info):
     spl_info = info.split(";")
@@ -26,20 +26,64 @@ class SV(object):
     def __init__(self, vcf_record, check_type = True, join_mode = False, output_ids = False):
         self.is_outputting_ids = output_ids
         self.join_mode = join_mode
+        self.is_sv = True
 
-        spl_line = vcf_record.rstrip().split("\t")[:8]
+        spl_line = vcf_record.rstrip("\n").split("\t")[:8]
         self.check_type = check_type
         self.chromosome = spl_line[0]
         self.begin = int(spl_line[1])
         self.end = self.begin
 
         if self.is_outputting_ids:
-          self.ids = [spl_line[2]]
+            self.ids = [spl_line[2]]
+
+        # If no INFO, add SVTYPE=UNK
+        if spl_line[7] == ".":
+            spl_line[7] = ""
 
         info_dict = make_info_dictionary(spl_line[7])
 
-        # Join related SV types
-        if "SVTYPE" in info_dict:
+        if "SVTYPE" not in info_dict:
+            ref = spl_line[3]
+            alt = spl_line[4]
+
+            # Only biallelic
+            alt_spl = [x for x in alt.split(",") if x != "*"]
+
+            if len(alt_spl) == 1:
+                if len(ref) >= len(alt) + 50:
+                    spl_line[4] = alt_spl[0]
+
+                    if len(spl_line[7]) > 0:
+                        spl_line[7] += ";"
+
+                    spl_line[7] = "%sSVTYPE=DEL;SVLEN=%d" % (spl_line[7], len(alt) - len(ref))
+                    info_dict["SVTYPE"] = "DEL"
+                    info_dict["SVSIZE"] = "%d" % (len(ref) - len(alt))
+                    info_dict["SVLEN"] = "%d" % (len(alt) - len(ref))
+                elif len(alt) >= len(ref) + 50:
+                    spl_line[4] = alt_spl[0]
+
+                    if len(spl_line[7]) > 0:
+                        spl_line[7] += ";"
+
+                    spl_line[7] = "%sSVTYPE=INS;SVLEN=%d" % (spl_line[7], len(alt) - len(ref))
+                    info_dict["SVTYPE"] = "INS"
+                    info_dict["SVSIZE"] = "%d" % (len(alt) - len(ref))
+                    info_dict["SVLEN"] = "%d" % (len(alt) - len(ref))
+                else:
+                  self.is_sv = False
+                  return None
+            else:
+              self.is_sv = False
+              return None
+
+            if "SVTYPE" not in info_dict:
+                info_dict["SVTYPE"] = "NOT_SV"
+                self.is_sv = False
+                return None
+        else:
+            # Join related SV types
             if info_dict["SVTYPE"] == "DEL_ALU" or info_dict["SVTYPE"] == "DEL_LINE1":
                 info_dict["SVTYPE"] = "DEL"
             elif info_dict["SVTYPE"] == "ALU" or info_dict["SVTYPE"] == "LINE1" or info_dict["SVTYPE"] == "SVA" or \
@@ -56,9 +100,7 @@ class SV(object):
         if "STDDEV_POS" in info_dict:
           spl_line[7] = spl_line[7].replace("STDDEV_POS=%s;" % info_dict["STDDEV_POS"], "")
 
-        #self.strand = 0  # -1 == minus strand, 0 == both strands, 1 plus strand
-
-        if "SVTYPE" in info_dict and (info_dict["SVTYPE"] == "DEL" ):
+        if "SVTYPE" in info_dict and info_dict["SVTYPE"] == "DEL":
             if "END" in info_dict:
                 self.end = int(info_dict["END"])
             else:
@@ -67,23 +109,25 @@ class SV(object):
                 elif "SVLEN" in info_dict:
                     self.end = self.begin + abs(int(info_dict["SVLEN"]))
 
+            if self.end - 50 < self.begin:
+                self.is_sv = False
+                return None
+        elif "SVTYPE" in info_dict and info_dict["SVTYPE"] == "INS":
+            svlen = int(info_dict["SVLEN"]) if "SVLEN" in info_dict else -1
+
+            if svlen == -1:
+                svlen = int(info_dict["SVSIZE"]) if "SVSIZE" in info_dict else -1
+
+            if svlen < 50 and "SVINSSEQ" not in info_dict and "LEFT_SVINSSEQ" not in info_dict and "RIGHT_SVINSSEQ" not in info_dict:
+                self.is_sv = False
+                return None
+
         if check_type:
-            if "SVTYPE" in info_dict and info_dict["SVTYPE"] in SV_TYPES:
+            if info_dict["SVTYPE"] in SV_TYPES:
                 self.type = SV_TYPES.index(info_dict["SVTYPE"])
             else:
                 self.type = 0  # Unknown type
                 assert False
-
-            #if info_dict["SVTYPE"] == "INV":
-            #    if "INV3" in info_dict:
-            #        self.strand = 1
-            #    elif "INV5" in info_dict:
-            #        self.strand = -1
-            #elif info_dict["SVTYPE"] == "BND":
-            #    if "[" in spl_line[4]:
-            #        self.strand = 1
-            #    elif "]" in spl_line[4]:
-            #        self.strand = -1
         else:
             self.type = 0
 

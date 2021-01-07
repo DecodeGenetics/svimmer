@@ -6,6 +6,7 @@ import itertools
 import gzip
 import logging
 import operator
+import os
 import sys
 from pysam import TabixFile
 from multiprocessing import Pool
@@ -65,16 +66,29 @@ def add_sv_to_many_in_store(ref_stored_svs, new_sv):
         if stored_sv_reverse.should_merge(new_sv, args.max_distance, args.max_size_difference):
             stored_sv_reverse.merge(new_sv)
 
+            if args.join_mode_strict:
+                return None
+
 
 def append_svs_from_vcf(vcf_filename, chrom):
     svs = []
+    vcf_filename = vcf_filename.rstrip("\n")
+    vcf_index = vcf_filename + ".csi"
+
+    # Use tabix (.tbi) index by default
+    if os.path.exists(vcf_filename + ".tbi"):
+        vcf_index = vcf_filename + ".tbi"
 
     try:
-        with TabixFile(vcf_filename.rstrip("\n")) as new_vcf_f:
+        with TabixFile(vcf_filename, "r", None, vcf_index) as new_vcf_f:
             for record in new_vcf_f.fetch(chrom):
-                svs.append(SV(record, check_type=not args.ignore_types, join_mode=args.join_mode, output_ids=args.ids))
-    except ValueError:
-        print("Warning: Contig '%s' was not found in file %s!" % (chrom, vcf_filename.rstrip("\n")))
+                new_sv = SV(record, check_type=not args.ignore_types, join_mode=args.join_mode, output_ids=args.ids)
+
+                if new_sv.is_sv:
+                    svs.append(new_sv)
+    except ValueError as e:
+        print(e)
+        print("Warning: Contig '%s' was not found in file %s!" % (chrom, vcf_filename))
         pass  # If contig does not exists
 
     return svs
@@ -102,14 +116,30 @@ if __name__ == "__main__":
                         action="store_true",
                         help="Set if the merging should ignore the SV type."
                         )
+    parser.add_argument("--ignore-bnd",
+                        dest="ignore_bnd",
+                        action="store_true",
+                        help="""Set if the merging should ignore break-end (BND) SVs."""
+                        )
     parser.add_argument("--join-mode",
                         dest="join_mode",
                         action="store_true",
                         help="""Set if the merging should join VCFs from the first file to the other\
                         files."""
                         )
+    parser.add_argument("--join-mode-strict",
+                        dest="join_mode_strict",
+                        action="store_true",
+                        help="""Set if the merging should join VCFs from the first file to the other\
+                        files. In strict join mode the SVs from the other files are only allowed to join against\
+                        at most one SV from the first file."""
+                        )
     parser.add_argument("--ids", action="store_true", help="""Print variant IDs in INFO field of merged SVs.""")
     args = parser.parse_args()
+
+    # Strict join mode implies join mode
+    if args.join_mode_strict:
+        args.join_mode = True
 
     if args.max_size_difference < 0:
         args.max_size_difference = 400000000
