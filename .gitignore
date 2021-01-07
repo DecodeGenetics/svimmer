@@ -1,10 +1,11 @@
 /__pycache__/
 *.pyc
 *.pyo
-*.vcf
-*.vcf.gz
-*.vcf.gz.tbi
+/*.vcf
+/*.vcf.gz
+/*.vcf.gz.tbi
 /*.rp
 /*.rpdb
 /.*/
 /*.sh
+/test/actual_output.vcf

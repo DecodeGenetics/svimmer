@@ -75,7 +75,7 @@ def append_svs_from_vcf(vcf_filename, chrom):
     vcf_filename = vcf_filename.rstrip("\n")
     vcf_index = vcf_filename + ".csi"
 
-    # Use tabix (.tbi) index by default
+    # Use .tbi index if it exists, otherwise try opening .csi
     if os.path.exists(vcf_filename + ".tbi"):
         vcf_index = vcf_filename + ".tbi"
 
