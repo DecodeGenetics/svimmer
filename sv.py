@@ -43,9 +43,8 @@ class SV(object):
             if info_dict["SVTYPE"] == "DEL_ALU" or info_dict["SVTYPE"] == "DEL_LINE1":
                 info_dict["SVTYPE"] = "DEL"
             elif info_dict["SVTYPE"] == "ALU" or info_dict["SVTYPE"] == "LINE1" or info_dict["SVTYPE"] == "SVA" or \
-                 info_dict["SVTYPE"] == "DUP" or info_dict["SVTYPE"] == "CNV" or info_dict["SVTYPE"] == "INVDUP" or \
-                 info_dict["SVTYPE"] == "INV":
-                info_dict["SVTYPE"] = "INS"
+                 info_dict["SVTYPE"] == "DUP" or info_dict["SVTYPE"] == "CNV" or info_dict["SVTYPE"] == "INVDUP":
+                  info_dict["SVTYPE"] = "INS"
             elif info_dict["SVTYPE"] == "TRA":
                 info_dict["SVTYPE"] = "BND"
 
