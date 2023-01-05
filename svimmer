@@ -13,6 +13,8 @@ from multiprocessing import Pool
 
 from sv import SV
 
+logger = logging.getLogger(__name__)
+
 
 def open_vcf_file(filename):
     _vcf_f = None
@@ -29,7 +31,10 @@ def read_header(vcf_f):
     header = ""
 
     while True:
-        line = vcf_f.readline().decode("utf-8")
+        line = vcf_f.readline()
+
+        if isinstance(line, (bytes, bytearray)):
+          line = line.decode("utf-8")
 
         if line.startswith("##"):
             header += line
@@ -70,7 +75,7 @@ def add_sv_to_many_in_store(ref_stored_svs, new_sv):
                 return None
 
 
-def append_svs_from_vcf(vcf_filename, chrom):
+def append_svs_from_vcf(vcf_filename, chrom, start=None, stop=None):
     svs = []
     vcf_filename = vcf_filename.rstrip("\n")
     vcf_index = vcf_filename + ".csi"
@@ -81,15 +86,24 @@ def append_svs_from_vcf(vcf_filename, chrom):
 
     try:
         with TabixFile(vcf_filename, "r", None, vcf_index) as new_vcf_f:
-            for record in new_vcf_f.fetch(chrom):
-                new_sv = SV(record, check_type=not args.ignore_types, join_mode=args.join_mode, output_ids=args.ids)
+            for record in new_vcf_f.fetch(chrom, start, stop):
+                new_sv = SV(record,
+                            check_type=not args.ignore_types,
+                            join_mode=args.join_mode,
+                            output_ids=args.ids,
+                            ignore_bnd=args.ignore_bnd,
+                            ignore_inv=args.ignore_inv)
 
-                if new_sv.is_sv:
+                if new_sv.is_sv and new_sv.begin >= start:
                     svs.append(new_sv)
     except ValueError as e:
         print(e)
         print("Warning: Contig '%s' was not found in file %s!" % (chrom, vcf_filename))
         pass  # If contig does not exists
+    except OSError as e2:
+      print(e2)
+      print("Error: Input file is expected to be bgzipped and index (either with .tbi or .csi)")
+      raise
 
     return svs
 
@@ -121,6 +135,11 @@ if __name__ == "__main__":
                         action="store_true",
                         help="""Set if the merging should ignore break-end (BND) SVs."""
                         )
+    parser.add_argument("--ignore-inv",
+                        dest="ignore_inv",
+                        action="store_true",
+                        help="""Set if the merging should ignore inversion (INV) SVs."""
+                        )
     parser.add_argument("--join-mode",
                         dest="join_mode",
                         action="store_true",
@@ -133,6 +152,18 @@ if __name__ == "__main__":
                         help="""Set if the merging should join VCFs from the first file to the other\
                         files. In strict join mode the SVs from the other files are only allowed to join against\
                         at most one SV from the first file."""
+                        )
+    parser.add_argument("--region-start",
+                        dest="region_start",
+                        default=1,
+                        type=int,
+                        help="""Start coordinate of region to merge/join."""
+                        )
+    parser.add_argument("--region-end",
+                        dest="region_end",
+                        default=17179869183,
+                        type=int,
+                        help="""End coordinate of region to merge/join. -1 means end of chromsome."""
                         )
     parser.add_argument("--ids", action="store_true", help="""Print variant IDs in INFO field of merged SVs.""")
     args = parser.parse_args()
@@ -150,7 +181,6 @@ if __name__ == "__main__":
     lines = []
     pool = Pool(args.threads)
 
-    logger = logging.getLogger(__name__)
     FORMAT = '%(asctime)-15s: %(message)s'
     logging.basicConfig(format=FORMAT)
     logger.setLevel(logging.getLevelName(args.loglevel))
@@ -181,9 +211,12 @@ if __name__ == "__main__":
 
             for chrom in args.chromosomes:
                 if args.join_mode:
-                    all_svs = append_svs_from_vcf(lines[0], chrom)
+                    all_svs = append_svs_from_vcf(lines[0], chrom, args.region_start, args.region_end)
                 else:
-                    results = pool.starmap(append_svs_from_vcf, zip(lines, itertools.repeat(chrom)), chunksize=1)
+                    results = pool.starmap(append_svs_from_vcf, zip(lines,
+                                                                    itertools.repeat(chrom),
+                                                                    itertools.repeat(args.region_start),
+                                                                    itertools.repeat(args.region_end)), chunksize=1)
                     all_svs = [item for sublist in results for item in sublist]
                     all_svs.sort(key = operator.attrgetter('begin', 'end')) # Sort all SVs
 

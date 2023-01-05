@@ -23,7 +23,13 @@ class SV(object):
     """
     Constructs a structural variant (SV) candidate
     """
-    def __init__(self, vcf_record, check_type = True, join_mode = False, output_ids = False):
+    def __init__(self,
+                 vcf_record,
+                 check_type = True,
+                 join_mode = False,
+                 output_ids = False,
+                 ignore_bnd = False,
+                 ignore_inv = False):
         self.is_outputting_ids = output_ids
         self.join_mode = join_mode
         self.is_sv = True
@@ -83,6 +89,11 @@ class SV(object):
                 self.is_sv = False
                 return None
         else:
+            if (ignore_bnd and (info_dict["SVTYPE"] == "BND" or info_dict["SVTYPE"] == "TRA")) or \
+               (ignore_inv and info_dict["SVTYPE"] == "INV"):
+                self.is_sv = False
+                return None
+
             # Join related SV types
             if info_dict["SVTYPE"] == "DEL_ALU" or info_dict["SVTYPE"] == "DEL_LINE1":
                 info_dict["SVTYPE"] = "DEL"
@@ -93,8 +104,14 @@ class SV(object):
             elif info_dict["SVTYPE"] == "TRA":
                 info_dict["SVTYPE"] = "BND"
 
+
+
         # Remove old values
+        self.old_num_merged_svs = -1
+
         if not join_mode and "NUM_MERGED_SVS" in info_dict:
+          #print(int(info_dict["NUM_MERGED_SVS"]))
+          self.old_num_merged_svs = int(info_dict["NUM_MERGED_SVS"])
           spl_line[7] = spl_line[7].replace("NUM_MERGED_SVS=%s;" % info_dict["NUM_MERGED_SVS"], "")
 
         if "STDDEV_POS" in info_dict:
@@ -153,16 +170,21 @@ class SV(object):
 
         num_text = "JOINED" if self.join_mode else "MERGED"
 
+        num_svs = len(self.begins)
+
+        if self.old_num_merged_svs > 0:
+            num_svs += self.old_num_merged_svs - 1
+
         if self.is_outputting_ids:
             info += "MERGED_IDS=%s;NUM_%s_SVS=%d;STDDEV_POS=%.2f,%.2f" % (",".join(self.ids),
                                                                           num_text,
-                                                                          len(self.begins),
+                                                                          num_svs,
                                                                           calculate_stddev(self.begins),
                                                                           calculate_stddev(self.ends)
                                                                           )
         else:
             info += "NUM_%s_SVS=%d;STDDEV_POS=%.2f,%.2f" % (num_text,
-                                                            len(self.begins),
+                                                            num_svs,
                                                             calculate_stddev(self.begins),
                                                             calculate_stddev(self.ends)
                                                             )
@@ -248,6 +270,9 @@ class SV(object):
         self.refs += other_sv.refs
         self.alts += other_sv.alts
         self.unique_begins_and_ends = self.unique_begins_and_ends.union(other_sv.unique_begins_and_ends)
+
+        if other_sv.old_num_merged_svs > 0:
+            self.old_num_merged_svs += other_sv.old_num_merged_svs - 1
 
         if self.is_outputting_ids:
             self.ids += other_sv.ids
